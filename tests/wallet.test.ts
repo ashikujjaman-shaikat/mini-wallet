@@ -309,3 +309,172 @@ describe('POST /api/wallet/transfer', () => {
     expect(await balances()).toEqual({ alice: 1000, bob: 500 });
   });
 });
+
+describe('GET /api/wallet/transactions', () => {
+  const bob = { name: 'Bob', email: 'bob@example.com', password: 'password123' };
+  const carol = { name: 'Carol', email: 'carol@example.com', password: 'password123' };
+  let bobToken: string;
+  let aliceWalletId: number;
+  let bobWalletId: number;
+  let bobUserId: number;
+  let carolToken: string;
+  let carolWalletId: number;
+
+  const list = (auth: string, query = '') =>
+    request(app).get(`/api/wallet/transactions${query}`).set('Authorization', `Bearer ${auth}`);
+
+  const post = (auth: string, path: string, body: object, key: string) =>
+    request(app)
+      .post(`/api/wallet/${path}`)
+      .set('Authorization', `Bearer ${auth}`)
+      .set('Idempotency-Key', key)
+      .send(body);
+
+  const register = async (account: typeof bob) => {
+    const res = await request(app).post('/api/auth/register').send(account);
+    const wallet = await prisma.wallet.findUniqueOrThrow({ where: { userId: res.body.user.id } });
+    return {
+      token: res.body.token as string,
+      walletId: wallet.id,
+      userId: res.body.user.id as number,
+    };
+  };
+
+  beforeEach(async () => {
+    aliceWalletId = (await prisma.wallet.findUniqueOrThrow({ where: { userId } })).id;
+    ({ token: bobToken, walletId: bobWalletId, userId: bobUserId } = await register(bob));
+    ({ token: carolToken, walletId: carolWalletId } = await register(carol));
+  });
+
+  it('returns 401 without a token', async () => {
+    const res = await request(app).get('/api/wallet/transactions');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns an empty page for a wallet with no transactions', async () => {
+    const res = await list(token);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: [], page: 1, limit: 20, total: 0 });
+  });
+
+  describe('pagination and ordering', () => {
+    beforeEach(async () => {
+      // amount i + 1 with createdAt increasing in i, so amount 25 is the newest
+      const base = Date.parse('2026-01-01T00:00:00Z');
+      await prisma.transaction.createMany({
+        data: Array.from({ length: 25 }, (_, i) => ({
+          type: 'DEPOSIT' as const,
+          amount: i + 1,
+          userId,
+          toWalletId: aliceWalletId,
+          idempotencyKey: `seed-${i}`,
+          requestHash: 'x',
+          createdAt: new Date(base + i * 1000),
+        })),
+      });
+      await prisma.transaction.create({
+        data: {
+          type: 'DEPOSIT',
+          amount: 999,
+          userId: bobUserId,
+          toWalletId: bobWalletId,
+          idempotencyKey: 'bob-seed',
+          requestHash: 'x',
+        },
+      });
+    });
+
+    it('uses page 1 and limit 20 by default and reports the total', async () => {
+      const res = await list(token);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ page: 1, limit: 20, total: 25 });
+      expect(res.body.data).toHaveLength(20);
+    });
+
+    it('returns the right slices', async () => {
+      const page1 = await list(token, '?page=1&limit=10');
+      const page3 = await list(token, '?page=3&limit=10');
+      const page4 = await list(token, '?page=4&limit=10');
+
+      expect(page1.body).toMatchObject({ page: 1, limit: 10, total: 25 });
+      expect(page1.body.data.map((t: { amount: number }) => t.amount)).toEqual([
+        25, 24, 23, 22, 21, 20, 19, 18, 17, 16,
+      ]);
+      expect(page3.body.data.map((t: { amount: number }) => t.amount)).toEqual([5, 4, 3, 2, 1]);
+      expect(page3.body.total).toBe(25);
+      expect(page4.body.data).toEqual([]);
+    });
+
+    it.each([
+      ['page=0', '?page=0'],
+      ['page=-1', '?page=-1'],
+      ['limit=0', '?limit=0'],
+      ['limit=101', '?limit=101'],
+      ['limit=abc', '?limit=abc'],
+      ['page=1.5', '?page=1.5'],
+    ])('returns 400 for %s', async (_label, query) => {
+      const res = await list(token, query);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('accepts the maximum limit', async () => {
+      const res = await list(token, '?limit=100');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(25);
+    });
+  });
+
+  it('orders newest first and sets direction for deposit, withdraw and both transfer sides', async () => {
+    await post(token, 'deposit', { amount: 1000 }, 'k1');
+    await post(token, 'withdraw', { amount: 200 }, 'k2');
+    await post(token, 'transfer', { toWalletId: bobWalletId, amount: 300 }, 'k3');
+
+    const alice = await list(token);
+    expect(alice.body.total).toBe(3);
+    expect(
+      alice.body.data.map((t: { type: string; direction: string }) => [t.type, t.direction]),
+    ).toEqual([
+      ['TRANSFER', 'OUT'],
+      ['WITHDRAW', 'OUT'],
+      ['DEPOSIT', 'IN'],
+    ]);
+
+    const bobList = await list(bobToken);
+    expect(bobList.body.total).toBe(1);
+    expect(bobList.body.data[0]).toMatchObject({
+      type: 'TRANSFER',
+      direction: 'IN',
+      fromWalletId: aliceWalletId,
+      toWalletId: bobWalletId,
+    });
+  });
+
+  it('does not expose internal idempotency fields', async () => {
+    await post(token, 'deposit', { amount: 100 }, 'secret-key');
+    const res = await list(token);
+
+    expect(res.body.data[0].requestHash).toBeUndefined();
+    expect(res.body.data[0].idempotencyKey).toBeUndefined();
+  });
+
+  it("never shows a user another user's transactions", async () => {
+    await post(token, 'deposit', { amount: 1000 }, 'k1');
+    await post(token, 'withdraw', { amount: 100 }, 'k2');
+    await post(token, 'transfer', { toWalletId: carolWalletId, amount: 300 }, 'k3');
+
+    const bobList = await list(bobToken);
+    expect(bobList.body).toEqual({ data: [], page: 1, limit: 20, total: 0 });
+
+    const carolList = await list(carolToken);
+    expect(carolList.body.total).toBe(1);
+    expect(carolList.body.data[0]).toMatchObject({ direction: 'IN', toWalletId: carolWalletId });
+
+    const aliceList = await list(token);
+    expect(aliceList.body.total).toBe(3);
+  });
+});

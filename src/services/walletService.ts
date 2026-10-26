@@ -2,7 +2,12 @@ import { Prisma, type Transaction, type Wallet } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { StatusCode } from '../constants/statusCode';
-import type { DepositInput, TransferInput, WithdrawInput } from '../validators/wallet';
+import type {
+  DepositInput,
+  TransactionsQuery,
+  TransferInput,
+  WithdrawInput,
+} from '../validators/wallet';
 import { runIdempotent } from './idempotency';
 
 const MAX_DEADLOCK_RETRIES = 3;
@@ -24,6 +29,52 @@ export const getWallet = async (userId: number): Promise<Wallet> => {
   const wallet = await prisma.wallet.findUnique({ where: { userId } });
   if (!wallet) throw new AppError(StatusCode.NOT_FOUND, 'WALLET_NOT_FOUND', 'Wallet not found');
   return wallet;
+};
+
+export type TransactionListItem = Omit<Transaction, 'requestHash' | 'idempotencyKey'> & {
+  direction: 'IN' | 'OUT';
+};
+
+export interface TransactionPage {
+  data: TransactionListItem[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+/**
+ * Lists the transactions that involve the user's wallet, newest first.
+ *
+ * `direction` is IN when the wallet is the receiver and OUT otherwise. A wallet can't transfer to
+ * itself, so a row is never both. The idempotency fields are omitted because the counterparty's
+ * key must not be exposed.
+ */
+export const listTransactions = async (
+  userId: number,
+  { page, limit }: TransactionsQuery,
+): Promise<TransactionPage> => {
+  const wallet = await getWallet(userId);
+  const where: Prisma.TransactionWhereInput = {
+    OR: [{ fromWalletId: wallet.id }, { toWalletId: wallet.id }],
+  };
+
+  const [total, rows] = await prisma.$transaction([
+    prisma.transaction.count({ where }),
+    prisma.transaction.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+  ]);
+
+  const data = rows.map(
+    ({ requestHash: _requestHash, idempotencyKey: _idempotencyKey, ...rest }) => ({
+      ...rest,
+      direction: rest.toWalletId === wallet.id ? ('IN' as const) : ('OUT' as const),
+    }),
+  );
+  return { data, page, limit, total };
 };
 
 /** Adds `amount` to the user's wallet, at most once per idempotency key. */

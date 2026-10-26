@@ -8,6 +8,7 @@ export const walletRoutes = Router();
 
 walletRoutes.use(authenticate);
 walletRoutes.get('/', walletController.getWallet);
+walletRoutes.get('/transactions', walletController.listTransactions);
 walletRoutes.post('/deposit', validate(depositSchema), walletController.deposit);
 walletRoutes.post('/withdraw', validate(withdrawSchema), walletController.withdraw);
 walletRoutes.post('/transfer', validate(transferSchema), walletController.transfer);

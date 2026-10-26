@@ -43,21 +43,23 @@ A Husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files) a
 
 ## API
 
-| Method | Endpoint               | Auth | Body                        |
-| ------ | ---------------------- | ---- | --------------------------- |
-| GET    | `/health`              | No   | none                        |
-| POST   | `/api/auth/register`   | No   | `{ name, email, password }` |
-| POST   | `/api/auth/login`      | No   | `{ email, password }`       |
-| GET    | `/api/wallet`          | Yes  | none                        |
-| POST   | `/api/wallet/deposit`  | Yes  | `{ amount }`                |
-| POST   | `/api/wallet/withdraw` | Yes  | `{ amount }`                |
-| POST   | `/api/wallet/transfer` | Yes  | `{ toWalletId, amount }`    |
+| Method | Endpoint                                | Auth | Body                        |
+| ------ | --------------------------------------- | ---- | --------------------------- |
+| GET    | `/health`                               | No   | none                        |
+| POST   | `/api/auth/register`                    | No   | `{ name, email, password }` |
+| POST   | `/api/auth/login`                       | No   | `{ email, password }`       |
+| GET    | `/api/wallet`                           | Yes  | none                        |
+| GET    | `/api/wallet/transactions?page=&limit=` | Yes  | none                        |
+| POST   | `/api/wallet/deposit`                   | Yes  | `{ amount }`                |
+| POST   | `/api/wallet/withdraw`                  | Yes  | `{ amount }`                |
+| POST   | `/api/wallet/transfer`                  | Yes  | `{ toWalletId, amount }`    |
 
 - Passwords are 8 to 72 characters.
 - Register returns `201` with `{ user, token }`; login returns `200` with `{ user, token }`.
 - Send the token as `Authorization: Bearer <token>` on protected routes.
 - The auth routes are limited to 20 requests per 15 minutes per IP.
 - `GET /api/wallet` returns the logged-in user's wallet (derived from the token).
+- `GET /api/wallet/transactions` returns `{ data, page, limit, total }` with the transactions that involve the caller's wallet, newest first. `page` defaults to `1`; `limit` defaults to `20` (max `100`). Each item has `direction`: `IN` if money came into the caller's wallet, `OUT` if it left. `idempotencyKey` and `requestHash` are not included.
 - `POST /api/wallet/deposit` returns `201` with the transaction. `amount` must be a positive integer, at most `100000000`.
 - `POST /api/wallet/withdraw` takes the same body and returns `201` with the transaction. A balance below `amount` returns `400 INSUFFICIENT_BALANCE`. The check and decrement are one conditional `UPDATE`, so parallel withdrawals can't overdraw.
 - `POST /api/wallet/transfer` moves `amount` from the caller's wallet to `toWalletId` and returns `201` with the transaction. Errors: `400 SAME_WALLET`, `400 INSUFFICIENT_BALANCE`, `404 RECEIVER_NOT_FOUND` (the debit is rolled back). Both wallet rows are locked with `SELECT ... FOR UPDATE` in ascending id order to avoid deadlocks, and a deadlock (P2034) is retried up to 3 times.
