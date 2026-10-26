@@ -191,3 +191,121 @@ describe('POST /api/wallet/withdraw', () => {
     expect(await prisma.transaction.count()).toBe(3);
   });
 });
+
+describe('POST /api/wallet/transfer', () => {
+  const bob = { name: 'Bob', email: 'bob@example.com', password: 'password123' };
+  let bobToken: string;
+  let aliceWalletId: number;
+  let bobWalletId: number;
+
+  const transfer = (from: string, toWalletId: unknown, amount: unknown, key?: string) => {
+    const req = request(app).post('/api/wallet/transfer').set('Authorization', `Bearer ${from}`);
+    if (key !== undefined) req.set('Idempotency-Key', key);
+    return req.send({ toWalletId, amount });
+  };
+
+  const balances = async () => {
+    const [alice, b] = await Promise.all([
+      prisma.wallet.findUniqueOrThrow({ where: { id: aliceWalletId } }),
+      prisma.wallet.findUniqueOrThrow({ where: { id: bobWalletId } }),
+    ]);
+    return { alice: alice.balance, bob: b.balance };
+  };
+
+  beforeEach(async () => {
+    const res = await request(app).post('/api/auth/register').send(bob);
+    bobToken = res.body.token;
+
+    aliceWalletId = (await prisma.wallet.findUniqueOrThrow({ where: { userId } })).id;
+    bobWalletId = (await prisma.wallet.findUniqueOrThrow({ where: { userId: res.body.user.id } }))
+      .id;
+    await prisma.wallet.update({ where: { id: aliceWalletId }, data: { balance: 1000 } });
+    await prisma.wallet.update({ where: { id: bobWalletId }, data: { balance: 500 } });
+  });
+
+  it('moves money between wallets and conserves the total', async () => {
+    const res = await transfer(token, bobWalletId, 300, 'key-1');
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      type: 'TRANSFER',
+      amount: 300,
+      userId,
+      fromWalletId: aliceWalletId,
+      toWalletId: bobWalletId,
+    });
+    expect(await balances()).toEqual({ alice: 700, bob: 800 });
+  });
+
+  it('returns 400 for insufficient balance and changes neither wallet', async () => {
+    const res = await transfer(token, bobWalletId, 1001, 'key-1');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INSUFFICIENT_BALANCE');
+    expect(await balances()).toEqual({ alice: 1000, bob: 500 });
+    expect(await prisma.transaction.count()).toBe(0);
+  });
+
+  it('returns 404 for an unknown receiver and rolls the debit back', async () => {
+    const res = await transfer(token, 999_999_999, 300, 'key-1');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('RECEIVER_NOT_FOUND');
+    expect(await balances()).toEqual({ alice: 1000, bob: 500 });
+    expect(await prisma.transaction.count()).toBe(0);
+  });
+
+  it('rejects a transfer to the same wallet', async () => {
+    const res = await transfer(token, aliceWalletId, 300, 'key-1');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('SAME_WALLET');
+    expect(await balances()).toEqual({ alice: 1000, bob: 500 });
+    expect(await prisma.transaction.count()).toBe(0);
+  });
+
+  it('moves money only once for the same Idempotency-Key', async () => {
+    const first = await transfer(token, bobWalletId, 300, 'key-1');
+    const second = await transfer(token, bobWalletId, 300, 'key-1');
+
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual(first.body);
+    expect(await prisma.transaction.count()).toBe(1);
+    expect(await balances()).toEqual({ alice: 700, bob: 800 });
+  });
+
+  it('returns 400 when the Idempotency-Key is missing', async () => {
+    const res = await transfer(token, bobWalletId, 300);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('MISSING_IDEMPOTENCY_KEY');
+    expect(await balances()).toEqual({ alice: 1000, bob: 500 });
+  });
+
+  it.each([
+    ['zero amount', { toWalletId: 1, amount: 0 }],
+    ['decimal amount', { toWalletId: 1, amount: 1.5 }],
+    ['string toWalletId', { toWalletId: '1', amount: 10 }],
+    ['missing toWalletId', { amount: 10 }],
+  ])('returns 400 for %s', async (_label, body) => {
+    const res = await request(app)
+      .post('/api/wallet/transfer')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'key-1')
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('completes parallel opposite transfers without deadlock errors and conserves money', async () => {
+    const results = await Promise.all([
+      ...Array.from({ length: 10 }, (_, i) => transfer(token, bobWalletId, 10, `a-to-b-${i}`)),
+      ...Array.from({ length: 10 }, (_, i) => transfer(bobToken, aliceWalletId, 10, `b-to-a-${i}`)),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(Array(20).fill(201));
+    expect(await prisma.transaction.count()).toBe(20);
+    expect(await balances()).toEqual({ alice: 1000, bob: 500 });
+  });
+});

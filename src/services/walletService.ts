@@ -1,9 +1,11 @@
-import type { Transaction, Wallet } from '@prisma/client';
+import { Prisma, type Transaction, type Wallet } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { StatusCode } from '../constants/statusCode';
-import type { DepositInput, WithdrawInput } from '../validators/wallet';
+import type { DepositInput, TransferInput, WithdrawInput } from '../validators/wallet';
 import { runIdempotent } from './idempotency';
+
+const MAX_DEADLOCK_RETRIES = 3;
 
 export type PublicTransaction = Omit<Transaction, 'requestHash'>;
 
@@ -69,6 +71,74 @@ export const withdraw = async (
       const wallet = await tx.wallet.findUniqueOrThrow({ where: { userId }, select: { id: true } });
       return { amount, fromWalletId: wallet.id };
     },
+  );
+  return publicTransaction(transaction);
+};
+
+/** Re-runs `fn` when MySQL aborts it as a deadlock victim (Prisma P2034). */
+const withDeadlockRetry = async <T>(fn: () => Promise<T>): Promise<T> => {
+  for (let retries = 0; ; retries++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const deadlock = err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034';
+      if (!deadlock || retries >= MAX_DEADLOCK_RETRIES) throw err;
+    }
+  }
+};
+
+/**
+ * Moves `amount` from the user's wallet to `toWalletId`, at most once per idempotency key.
+ *
+ * Both wallet rows are locked in ascending id order, so opposite transfers can't deadlock. The
+ * debit is a conditional UPDATE; a missing receiver rolls the debit back.
+ *
+ * @throws {AppError} 400 SAME_WALLET, 400 INSUFFICIENT_BALANCE or 404 RECEIVER_NOT_FOUND.
+ */
+export const transfer = async (
+  userId: number,
+  key: string,
+  { toWalletId, amount }: TransferInput,
+): Promise<PublicTransaction> => {
+  const sender = await getWallet(userId);
+  if (sender.id === toWalletId) {
+    throw new AppError(StatusCode.BAD_REQUEST, 'SAME_WALLET', 'Cannot transfer to the same wallet');
+  }
+
+  const transaction = await withDeadlockRetry(() =>
+    runIdempotent(
+      { userId, key, type: 'TRANSFER', payload: { toWalletId, amount } },
+      async (tx) => {
+        const [firstId, secondId] = [sender.id, toWalletId].sort((a, b) => a - b);
+        await tx.$queryRaw`SELECT id FROM Wallet WHERE id IN (${firstId}, ${secondId}) ORDER BY id FOR UPDATE`;
+
+        const debit = await tx.wallet.updateMany({
+          where: { id: sender.id, balance: { gte: amount } },
+          data: { balance: { decrement: amount } },
+        });
+        if (debit.count !== 1) {
+          throw new AppError(
+            StatusCode.BAD_REQUEST,
+            'INSUFFICIENT_BALANCE',
+            'Insufficient balance',
+          );
+        }
+
+        const credit = await tx.wallet.updateMany({
+          where: { id: toWalletId },
+          data: { balance: { increment: amount } },
+        });
+        if (credit.count !== 1) {
+          throw new AppError(
+            StatusCode.NOT_FOUND,
+            'RECEIVER_NOT_FOUND',
+            'Receiver wallet not found',
+          );
+        }
+
+        return { amount, fromWalletId: sender.id, toWalletId };
+      },
+    ),
   );
   return publicTransaction(transaction);
 };

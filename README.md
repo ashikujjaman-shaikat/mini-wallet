@@ -1,6 +1,6 @@
 # Mini Wallet
 
-A small wallet API: user registration and login with JWT, each user getting one wallet, balance lookup and idempotent deposits and withdrawals. Transfer comes in a later step.
+A small wallet API: user registration and login with JWT, each user getting one wallet, balance lookup and idempotent deposits, withdrawals and transfers.
 
 ## Stack
 
@@ -51,6 +51,7 @@ A Husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files) a
 | GET    | `/api/wallet`          | Yes  | none                        |
 | POST   | `/api/wallet/deposit`  | Yes  | `{ amount }`                |
 | POST   | `/api/wallet/withdraw` | Yes  | `{ amount }`                |
+| POST   | `/api/wallet/transfer` | Yes  | `{ toWalletId, amount }`    |
 
 - Passwords are 8 to 72 characters.
 - Register returns `201` with `{ user, token }`; login returns `200` with `{ user, token }`.
@@ -59,6 +60,7 @@ A Husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files) a
 - `GET /api/wallet` returns the logged-in user's wallet (derived from the token).
 - `POST /api/wallet/deposit` returns `201` with the transaction. `amount` must be a positive integer, at most `100000000`.
 - `POST /api/wallet/withdraw` takes the same body and returns `201` with the transaction. A balance below `amount` returns `400 INSUFFICIENT_BALANCE`. The check and decrement are one conditional `UPDATE`, so parallel withdrawals can't overdraw.
+- `POST /api/wallet/transfer` moves `amount` from the caller's wallet to `toWalletId` and returns `201` with the transaction. Errors: `400 SAME_WALLET`, `400 INSUFFICIENT_BALANCE`, `404 RECEIVER_NOT_FOUND` (the debit is rolled back). Both wallet rows are locked with `SELECT ... FOR UPDATE` in ascending id order to avoid deadlocks, and a deadlock (P2034) is retried up to 3 times.
 
 ### Idempotency
 
