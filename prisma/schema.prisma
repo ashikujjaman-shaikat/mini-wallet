@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum TxType {
+  DEPOSIT
+  WITHDRAW
+  TRANSFER
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  wallet       Wallet?
+}
+
+model Wallet {
+  id                   Int           @id @default(autoincrement())
+  userId               Int           @unique
+  user                 User          @relation(fields: [userId], references: [id])
+  balance              Int           @default(0)
+  currency             String        @default("BDT")
+  updatedAt            DateTime      @updatedAt
+  sentTransactions     Transaction[] @relation("sent")
+  receivedTransactions Transaction[] @relation("received")
+}
+
+model Transaction {
+  id             Int      @id @default(autoincrement())
+  type           TxType
+  amount         Int
+  userId         Int
+  fromWalletId   Int?
+  toWalletId     Int?
+  fromWallet     Wallet?  @relation("sent", fields: [fromWalletId], references: [id])
+  toWallet       Wallet?  @relation("received", fields: [toWalletId], references: [id])
+  idempotencyKey String   @db.VarChar(100)
+  requestHash    String   @db.VarChar(64)
+  createdAt      DateTime @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([fromWalletId, createdAt])
+  @@index([toWalletId, createdAt])
+}

@@ -1,0 +1,20 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mini-wallet-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: mini_wallet
+    ports:
+      - '3308:3306'
+    volumes:
+      - mini_wallet_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-prootpassword']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mini_wallet_mysql_data:

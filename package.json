@@ -1,0 +1,68 @@
+{
+  "name": "mini-wallet",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "nodemon --watch src --ext ts --exec tsx src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky",
+    "test": "jest --runInBand"
+  },
+  "lint-staged": {
+    "*.{ts,mjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,yml,md}": "prettier --write"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "globalSetup": "./tests/globalSetup.ts",
+    "setupFiles": [
+      "./tests/setupEnv.ts"
+    ]
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.6.5",
+    "@types/supertest": "^7.2.1",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
+    "jest": "^30.5.2",
+    "lint-staged": "^17.6.0",
+    "nodemon": "^3.1.14",
+    "prettier": "^3.9.10",
+    "prisma": "^6.19.3",
+    "supertest": "^7.3.1",
+    "ts-jest": "^29.4.15",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.0"
+  }
+}
