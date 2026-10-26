@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import { authRoutes } from './routes/auth';
+import { walletRoutes } from './routes/wallet';
 import { notFound, errorHandler } from './middleware/errorHandler';
 import { StatusCode } from './constants/statusCode';
 
@@ -17,6 +18,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/wallet', walletRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
