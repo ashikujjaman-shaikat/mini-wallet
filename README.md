@@ -1,6 +1,6 @@
 # Mini Wallet
 
-A small wallet API: user registration and login with JWT, each user getting one wallet, balance lookup and idempotent deposits. Withdraw and transfer come in later steps.
+A small wallet API: user registration and login with JWT, each user getting one wallet, balance lookup and idempotent deposits and withdrawals. Transfer comes in a later step.
 
 ## Stack
 
@@ -43,13 +43,14 @@ A Husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files) a
 
 ## API
 
-| Method | Endpoint              | Auth | Body                        |
-| ------ | --------------------- | ---- | --------------------------- |
-| GET    | `/health`             | No   | none                        |
-| POST   | `/api/auth/register`  | No   | `{ name, email, password }` |
-| POST   | `/api/auth/login`     | No   | `{ email, password }`       |
-| GET    | `/api/wallet`         | Yes  | none                        |
-| POST   | `/api/wallet/deposit` | Yes  | `{ amount }`                |
+| Method | Endpoint               | Auth | Body                        |
+| ------ | ---------------------- | ---- | --------------------------- |
+| GET    | `/health`              | No   | none                        |
+| POST   | `/api/auth/register`   | No   | `{ name, email, password }` |
+| POST   | `/api/auth/login`      | No   | `{ email, password }`       |
+| GET    | `/api/wallet`          | Yes  | none                        |
+| POST   | `/api/wallet/deposit`  | Yes  | `{ amount }`                |
+| POST   | `/api/wallet/withdraw` | Yes  | `{ amount }`                |
 
 - Passwords are 8 to 72 characters.
 - Register returns `201` with `{ user, token }`; login returns `200` with `{ user, token }`.
@@ -57,6 +58,7 @@ A Husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files) a
 - The auth routes are limited to 20 requests per 15 minutes per IP.
 - `GET /api/wallet` returns the logged-in user's wallet (derived from the token).
 - `POST /api/wallet/deposit` returns `201` with the transaction. `amount` must be a positive integer, at most `100000000`.
+- `POST /api/wallet/withdraw` takes the same body and returns `201` with the transaction. A balance below `amount` returns `400 INSUFFICIENT_BALANCE`. The check and decrement are one conditional `UPDATE`, so parallel withdrawals can't overdraw.
 
 ### Idempotency
 

@@ -16,6 +16,15 @@ const deposit = (amount: unknown, key?: string) => {
 const balance = async (): Promise<number> =>
   (await prisma.wallet.findUniqueOrThrow({ where: { userId } })).balance;
 
+const withdraw = (amount: unknown, key?: string) => {
+  const req = request(app).post('/api/wallet/withdraw').set('Authorization', `Bearer ${token}`);
+  if (key !== undefined) req.set('Idempotency-Key', key);
+  return req.send({ amount });
+};
+
+const setBalance = (balance: number) =>
+  prisma.wallet.update({ where: { userId }, data: { balance } });
+
 beforeEach(async () => {
   await prisma.transaction.deleteMany();
   await prisma.wallet.deleteMany();
@@ -117,5 +126,68 @@ describe('POST /api/wallet/deposit', () => {
     }
     expect(await prisma.transaction.count()).toBe(1);
     expect(await balance()).toBe(500);
+  });
+});
+
+describe('POST /api/wallet/withdraw', () => {
+  beforeEach(async () => {
+    await setBalance(1000);
+  });
+
+  it('reduces the balance and returns the transaction', async () => {
+    const res = await withdraw(300, 'key-1');
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ type: 'WITHDRAW', amount: 300, userId, toWalletId: null });
+    expect(res.body.fromWalletId).toEqual(expect.any(Number));
+    expect(await balance()).toBe(700);
+  });
+
+  it('allows withdrawing the exact balance', async () => {
+    const res = await withdraw(1000, 'key-1');
+
+    expect(res.status).toBe(201);
+    expect(await balance()).toBe(0);
+  });
+
+  it('returns 400 for insufficient balance and leaves everything unchanged', async () => {
+    const res = await withdraw(1001, 'key-1');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INSUFFICIENT_BALANCE');
+    expect(await balance()).toBe(1000);
+    expect(await prisma.transaction.count()).toBe(0);
+  });
+
+  it('withdraws only once for the same Idempotency-Key', async () => {
+    const first = await withdraw(300, 'key-1');
+    const second = await withdraw(300, 'key-1');
+
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual(first.body);
+    expect(await prisma.transaction.count()).toBe(1);
+    expect(await balance()).toBe(700);
+  });
+
+  it('returns 400 when the Idempotency-Key is missing', async () => {
+    const res = await withdraw(300);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('MISSING_IDEMPOTENCY_KEY');
+    expect(await balance()).toBe(1000);
+  });
+
+  it('never overdraws with parallel withdrawals using different keys', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => withdraw(300, `race-${i}`)),
+    );
+
+    const succeeded = results.filter((r) => r.status === 201);
+    const rejected = results.filter((r) => r.status === 400);
+    expect(succeeded).toHaveLength(3);
+    expect(rejected).toHaveLength(2);
+    for (const res of rejected) expect(res.body.error.code).toBe('INSUFFICIENT_BALANCE');
+    expect(await balance()).toBe(100);
+    expect(await prisma.transaction.count()).toBe(3);
   });
 });

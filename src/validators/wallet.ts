@@ -6,4 +6,7 @@ export const depositSchema = z.object({
   amount: z.number().int().positive().max(MAX_AMOUNT),
 });
 
+export const withdrawSchema = depositSchema;
+
 export type DepositInput = z.infer<typeof depositSchema>;
+export type WithdrawInput = z.infer<typeof withdrawSchema>;

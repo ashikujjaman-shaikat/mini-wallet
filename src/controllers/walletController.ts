@@ -15,3 +15,10 @@ export const deposit = async (req: Request, res: Response): Promise<void> => {
   const transaction = await walletService.deposit(req.user!.id, key, req.body);
   res.status(StatusCode.CREATED).json(transaction);
 };
+
+/** POST /api/wallet/withdraw - Responds 201 with the withdrawal transaction (also on an idempotent replay). */
+export const withdraw = async (req: Request, res: Response): Promise<void> => {
+  const key = getIdempotencyKey(req);
+  const transaction = await walletService.withdraw(req.user!.id, key, req.body);
+  res.status(StatusCode.CREATED).json(transaction);
+};
